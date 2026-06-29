@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGUSER:-almox}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-almox}
+      POSTGRES_DB: ${PGDATABASE:-almoxarifado}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-almox} -d ${PGDATABASE:-almoxarifado}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Exponha a porta só se quiser acessar o banco de fora:
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: ${PGUSER:-almox}
+      PGPASSWORD: ${PGPASSWORD:-almox}
+      PGDATABASE: ${PGDATABASE:-almoxarifado}
+      JWT_SECRET: ${JWT_SECRET:-troque-este-segredo}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-rafa1411}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  db_data:

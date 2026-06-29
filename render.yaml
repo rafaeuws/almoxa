@@ -1,0 +1,39 @@
+# ============================================================
+#  render.yaml — Blueprint do Render para o Almoxarifado Cloud
+#  Banco PostgreSQL externo no Neon.tech (não usa banco do Render).
+#  Crie o serviço em: Render > New > Blueprint, apontando para o repositório.
+# ============================================================
+services:
+  - type: web
+    name: almoxarifado-cloud
+    runtime: node
+    plan: free                # ajuste para "starter" se quiser evitar a hibernação
+    region: oregon            # escolha a região mais próxima dos usuários
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      # Cole aqui a connection string do Neon (use a opção "Pooled connection").
+      # Ex.: postgresql://user:senha@ep-xxx-pooler.us-east-2.aws.neon.tech/almoxarifado?sslmode=require
+      - key: DATABASE_URL
+        sync: false
+      - key: PGSSL
+        value: "true"
+      # Gere um segredo forte (o Render pode gerar automaticamente):
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES
+        value: 12h
+      # Usuário admin criado só na primeira execução:
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Pool enxuto para o limite de conexões do Neon:
+      - key: DB_POOL_MAX
+        value: "8"

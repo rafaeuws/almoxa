@@ -1,0 +1,8 @@
+# Caddy faz proxy reverso para o app e emite certificado HTTPS automaticamente.
+# SITE_ADDRESS vem do .env:
+#   - com domínio:  SITE_ADDRESS=almox.seudominio.com   -> HTTPS automático (Let's Encrypt)
+#   - sem domínio:  SITE_ADDRESS=:80                     -> só HTTP (para testes)
+{$SITE_ADDRESS} {
+	encode gzip
+	reverse_proxy app:3000
+}
