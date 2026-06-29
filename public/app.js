@@ -179,6 +179,7 @@ function renderTrocaSenha() {
 }
 function afterLogin() {
   if (State.hotel && State.hoteis.some((h) => h.id === State.hotel.id)) return enterApp();
+  if (isAdmin() && State.hoteis.length === 0) { setHotel(null); State.page = 'hoteis'; return enterApp(); }
   if (State.hoteis.length === 1 && !isAdmin()) { setHotel(State.hoteis[0]); return enterApp(); }
   renderHotelSelect();
 }
@@ -201,12 +202,27 @@ function renderHotelSelect() {
         <button class="btn sm" onclick="logout()" style="background:rgba(255,255,255,.15);color:#fff;border-color:transparent">Sair</button></div>
       <div class="hotel-wrap">
         <h2 style="margin-bottom:4px">Escolha o hotel</h2>
-        <p class="t-sub" style="margin-bottom:22px">Cada hotel é um almoxarifado independente.</p>
-        ${State.hoteis.length ? `<div class="hotel-grid">${tiles}</div>` : `<div class="empty"><h4>Nenhum hotel disponível</h4><p>${isAdmin() ? 'Cadastre um hotel na área administrativa após entrar.' : 'Peça ao administrador para vincular seu usuário a um hotel.'}</p>${isAdmin() ? `<button class="btn primary" onclick="enterApp()">Entrar mesmo assim</button>` : ''}</div>`}
+        <p class="t-sub" style="margin-bottom:18px">Cada hotel é um almoxarifado independente.</p>
+        ${isAdmin() ? `<div class="row" style="margin-bottom:20px"><button class="btn primary" onclick="gateCriarHotel()">${svg(I.plus)} Criar hotel</button><button class="btn" onclick="gateAdmin('usuarios')">${svg(I.users)} Gerir usuários</button><button class="btn" onclick="gateAdmin('hoteis')">${svg(I.hotel)} Painel administrativo</button></div>` : ''}
+        ${State.hoteis.length
+          ? `<div class="hotel-grid">${tiles}</div>`
+          : `<div class="empty"><h4>Nenhum hotel cadastrado</h4><p>${isAdmin() ? 'Crie o primeiro hotel para começar — use o botão "Criar hotel" acima. Você também pode gerir os usuários por aqui.' : 'Peça ao administrador para vincular seu usuário a um hotel.'}</p></div>`}
       </div></div>`;
 }
 function selecionarHotel(id) { const h = State.hoteis.find((x) => x.id === id); if (h) { setHotel(h); enterApp(); } }
 function trocarHotel() { renderHotelSelect(); }
+// Cria um hotel direto pela tela de entrada (sem precisar entrar no app).
+function gateCriarHotel() {
+  openModal('Novo hotel', `<div class="field-row c2"><div class="field"><label>Código</label><input id="h_cod" placeholder="Ex.: H001"></div><div class="field"><label>Cidade</label><input id="h_cid"></div></div><div class="field"><label>Nome <span class="req">*</span></label><input id="h_nome" placeholder="Nome do hotel"></div>`, async () => {
+    const body = { codigo: val('h_cod'), nome: val('h_nome'), cidade: val('h_cid') };
+    if (!body.nome) return modalErr('Informe o nome.');
+    await api('/hoteis', { method: 'POST', body });
+    const me = await api('/me'); State.hoteis = me.hoteis;
+    closeModal(); toast('Hotel criado.', 'ok'); renderHotelSelect();
+  }, 'wide', 'Criar hotel');
+}
+// Entra no modo administração (sem hotel selecionado) numa página específica.
+function gateAdmin(page) { setHotel(null); State.page = page || 'hoteis'; enterApp(); }
 
 /* ============================================================
    APP SHELL
@@ -230,11 +246,16 @@ function podeVer(p) {
 }
 let pendentesCount = 0;
 function enterApp() {
-  if (!State.hotel) return renderHotelSelect();
+  if (!State.hotel && !isAdmin()) return renderHotelSelect();
+  const semHotel = !State.hotel;
+  const brandTxt = semHotel ? 'Modo administração' : esc(State.hotel.nome);
+  const footTxt = semHotel
+    ? `Nenhum hotel selecionado · <a onclick="trocarHotel()" style="cursor:pointer">Selecionar hotel</a>`
+    : `${esc(State.hotel.nome)} ${State.hoteis.length > 1 || isAdmin() ? `· <a onclick="trocarHotel()" style="cursor:pointer">Trocar hotel</a>` : ''}`;
   $('root').innerHTML = `
     <div class="app">
       <aside class="sidebar" id="sidebar">
-        <div class="brand"><div class="mk">AX</div><div><h1>Almoxarifado</h1><p id="brandHotel">${esc(State.hotel.nome)}</p></div></div>
+        <div class="brand"><div class="mk">AX</div><div><h1>Almoxarifado</h1><p id="brandHotel">${brandTxt}</p></div></div>
         <nav class="nav" id="nav"></nav>
       </aside>
       <header class="topbar">
@@ -248,26 +269,29 @@ function enterApp() {
           <button class="icon-btn" title="Sair" onclick="logout()">${svg(I.swap)}</button></div>
       </header>
       <main class="content" id="view"></main>
-      <footer class="appfoot"><span>${svg(I.hotel, 'ic-sm')}</span> ${esc(State.hotel.nome)}
-        ${State.hoteis.length > 1 || isAdmin() ? `· <a onclick="trocarHotel()" style="cursor:pointer">Trocar hotel</a>` : ''}
+      <footer class="appfoot"><span>${svg(I.hotel, 'ic-sm')}</span> ${footTxt}
         <span class="spacer"></span> Desenvolvido por Rafael Almeida · rafael.almeida@accor.com</footer>
     </div>`;
   if (window.innerWidth <= 860) $('menuBtn').style.display = 'inline-flex';
-  buildNav(); go(State.page || 'painel');
+  buildNav(); go(State.page || (semHotel ? 'hoteis' : 'painel'));
 }
 function buildNav() {
   const nav = $('nav'); let html = ''; let lastGrp = '';
-  PAGES.filter(podeVer).forEach((p) => {
+  const semHotel = !State.hotel;
+  PAGES.filter((p) => podeVer(p) && (!semHotel || p.admin)).forEach((p) => {
     if (p.grp !== lastGrp) { html += `<div class="group">${p.grp}</div>`; lastGrp = p.grp; }
     let badge = '';
     if (p.id === 'requisicoes' && canApprove() && pendentesCount > 0) badge = `<span class="badge warn">${pendentesCount}</span>`;
     html += `<a data-page="${p.id}" class="${p.id === State.page ? 'active' : ''}" onclick="go('${p.id}')">${svg(p.icon)}<span>${p.label}</span>${badge}</a>`;
   });
+  if (semHotel) html += `<div class="group">Hotel</div><a onclick="trocarHotel()">${svg(I.hotel)}<span>Selecionar hotel</span></a>`;
   nav.innerHTML = html;
 }
 function go(pageId) {
-  const p = PAGES.find((x) => x.id === pageId);
-  if (!p || !podeVer(p)) pageId = 'painel';
+  let p = PAGES.find((x) => x.id === pageId);
+  if (!p || !podeVer(p)) pageId = State.hotel ? 'painel' : 'hoteis';
+  // Sem hotel selecionado, só páginas administrativas podem abrir.
+  if (!State.hotel) { const pp = PAGES.find((x) => x.id === pageId); if (!pp || !pp.admin) pageId = 'hoteis'; }
   State.page = pageId;
   const pg = PAGES.find((x) => x.id === pageId);
   $('pageTitle').textContent = pg.label; $('crumb').textContent = pg.grp;
@@ -586,7 +610,7 @@ async function boot() {
 window.addEventListener('DOMContentLoaded', boot);
 
 // Expõe funções usadas em onclick inline.
-Object.assign(window, { go, logout, trocarHotel, selecionarHotel, ajuda, refresh, toggleTheme,
+Object.assign(window, { go, logout, trocarHotel, selecionarHotel, ajuda, refresh, toggleTheme, gateCriarHotel, gateAdmin,
   modalItem, excluirItem, filtraItens, modalCategoria, excluirCategoria, modalFornecedor, excluirFornecedor,
   modalEntrada, modalRequisicao, verRequisicao, aprovarRequisicao, rejeitarRequisicao,
   renderAjustes, ajSaldoAtual, salvarAjuste, addLinha, redrawLinhas,
