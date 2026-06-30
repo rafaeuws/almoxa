@@ -394,7 +394,10 @@ hotelRouter.get('/movimentacoes', h(async (req, res) => {
                     i.codigo AS "itemCodigo", i.descricao AS "itemDescricao", i.unidade
                FROM movimentacoes m JOIN itens i ON i.id=m.item_id WHERE m.hotel_id=$1`;
   if (req.query.itemId) { params.push(req.query.itemId); sql += ` AND m.item_id=$${params.length}`; }
-  sql += ' ORDER BY m.data DESC LIMIT 500';
+  let limit = 500;
+  if (req.query.de) { params.push(req.query.de); sql += ` AND m.data >= $${params.length}`; limit = 5000; }
+  if (req.query.ate) { params.push(req.query.ate + ' 23:59:59'); sql += ` AND m.data <= $${params.length}`; limit = 5000; }
+  sql += ` ORDER BY m.data DESC LIMIT ${limit}`;
   res.json((await db.query(sql, params)).rows);
 }));
 
@@ -517,6 +520,62 @@ hotelRouter.post('/ajustes', requireRole('admin', 'almoxarifado'), h(async (req,
       documento: 'AJUSTE', origem: 'Ajuste de inventário', obs: b.obs || '', usuario: req.user.username });
   });
   res.json({ ok: true });
+}));
+
+// ----- Contagem mensal de inventário -----
+hotelRouter.get('/contagens', h(async (req, res) => {
+  const cs = (await db.query(
+    `SELECT c.id, c.numero, c.data, c.responsavel, c.ajustes,
+            (SELECT COUNT(*)::int FROM contagem_itens ci WHERE ci.contagem_id=c.id) AS "qtdItens"
+       FROM contagens c WHERE c.hotel_id=$1 ORDER BY c.data DESC`, [req.params.hotelId])).rows;
+  res.json(cs);
+}));
+hotelRouter.get('/contagens/:id', h(async (req, res) => {
+  if (!isUuid(req.params.id)) throw fail(404, 'Contagem não encontrada.');
+  const c = (await db.query('SELECT id, numero, data, responsavel, ajustes FROM contagens WHERE id=$1 AND hotel_id=$2', [req.params.id, req.params.hotelId])).rows[0];
+  if (!c) throw fail(404, 'Contagem não encontrada.');
+  c.itens = (await db.query(
+    `SELECT ci.sistema::float AS sistema, ci.contado::float AS contado, ci.diverg::float AS diverg,
+            i.codigo, i.descricao, i.unidade
+       FROM contagem_itens ci JOIN itens i ON i.id=ci.item_id WHERE ci.contagem_id=$1
+      ORDER BY i.descricao`, [req.params.id])).rows;
+  res.json(c);
+}));
+// Finaliza uma contagem: registra o documento e ajusta automaticamente as divergências (no Kardex).
+hotelRouter.post('/contagens', requireRole('admin', 'almoxarifado'), h(async (req, res) => {
+  const b = req.body || {};
+  const itens = Array.isArray(b.itens) ? b.itens : [];
+  if (!itens.length) throw fail(400, 'Nenhum item para contar.');
+  const out = await db.withTx(async (c) => {
+    const numero = await nextNumero(c, req.params.hotelId, 'cont', 'CONT-');
+    let ajustes = 0;
+    const linhas = [];
+    for (const l of itens) {
+      const it = (await c.query('SELECT id, estoque_atual::float AS saldo FROM itens WHERE id=$1 AND hotel_id=$2', [l.itemId, req.params.hotelId])).rows[0];
+      if (!it) continue;
+      const sistema = Number(it.saldo);
+      const contado = Number(l.contado);
+      if (!isFinite(contado) || contado < 0) throw fail(400, 'Quantidade contada inválida.');
+      const diverg = contado - sistema;
+      linhas.push({ itemId: it.id, sistema, contado, diverg });
+      if (diverg !== 0) {
+        await registrarMovimento(c, req.params.hotelId, {
+          itemId: it.id, tipo: 'ajuste', quantidade: contado, custoUnitario: 0,
+          documento: numero, origem: 'Contagem ' + (b.responsavel || ''),
+          obs: 'Divergência de contagem: ' + (diverg > 0 ? '+' : '') + diverg, usuario: req.user.username });
+        ajustes++;
+      }
+    }
+    const cont = await c.query(
+      `INSERT INTO contagens (hotel_id,numero,data,responsavel,ajustes) VALUES ($1,$2,now(),$3,$4) RETURNING id`,
+      [req.params.hotelId, numero, b.responsavel || '', ajustes]);
+    for (const l of linhas) {
+      await c.query('INSERT INTO contagem_itens (contagem_id,item_id,sistema,contado,diverg) VALUES ($1,$2,$3,$4,$5)',
+        [cont.rows[0].id, l.itemId, l.sistema, l.contado, l.diverg]);
+    }
+    return { id: cont.rows[0].id, numero, ajustes };
+  });
+  res.status(201).json(out);
 }));
 
 /* ============================================================
