@@ -568,7 +568,29 @@ async function renderHoteis(v) {
   v.innerHTML = html + `</tbody></table></div>`;
 }
 function modalHotel(id) { const hh = id ? (hoteisAdminCache.find((x) => x.id === id) || {}) : {}; openModal(hh.id ? 'Editar hotel' : 'Novo hotel', `<div class="field-row c2"><div class="field"><label>Código</label><input id="h_cod" value="${esc(hh.codigo || '')}"></div><div class="field"><label>Cidade</label><input id="h_cid" value="${esc(hh.cidade || '')}"></div></div><div class="field"><label>Nome <span class="req">*</span></label><input id="h_nome" value="${esc(hh.nome || '')}"></div>${hh.id ? `<div class="field"><label>Situação</label><select id="h_ativo"><option value="1" ${hh.ativo !== false ? 'selected' : ''}>Ativo</option><option value="0" ${hh.ativo === false ? 'selected' : ''}>Inativo</option></select></div>` : ''}`, async () => { const body = { codigo: val('h_cod'), nome: val('h_nome'), cidade: val('h_cid') }; if (!body.nome) return modalErr('Informe o nome.'); if (hh.id) { body.ativo = val('h_ativo') === '1'; await api('/hoteis/' + hh.id, { method: 'PUT', body }); } else await api('/hoteis', { method: 'POST', body }); closeModal(); toast('Salvo.', 'ok'); const me = await api('/me'); State.hoteis = me.hoteis; refresh(); }, 'wide'); }
-function excluirHotel(id) { const hh = hoteisAdminCache.find((x) => x.id === id) || {}; confirmar('Excluir hotel?', `Excluir "${hh.nome || ''}" e TODOS os seus dados (itens, movimentações, requisições)? Esta ação é irreversível.`, async () => { await api('/hoteis/' + id, { method: 'DELETE' }); closeModal(); toast('Hotel excluído.', 'warn'); const me = await api('/me'); State.hoteis = me.hoteis; if (State.hotel && State.hotel.id === id) { setHotel(null); return renderHotelSelect(); } refresh(); }, 'Excluir'); }
+function excluirHotel(id) {
+  const hh = hoteisAdminCache.find((x) => x.id === id) || {};
+  openModal('Excluir hotel', `
+    <div class="modal-err" style="margin-bottom:14px"><strong>Atenção:</strong> excluir "${esc(hh.nome || '')}" remove TODOS os dados do hotel (itens, movimentações, requisições, entradas e contagens). Esta ação é irreversível.</div>
+    <div class="field"><label>Confirme sua senha para excluir <span class="req">*</span></label>
+      <input id="del_pass" type="password" placeholder="sua senha de administrador" autocomplete="current-password"></div>`,
+    async () => {
+      const pass = document.getElementById('del_pass').value;
+      if (!pass) return modalErr('Digite sua senha para confirmar.');
+      // Verifica a senha no servidor (bcrypt) sem afetar a sessão — não usa api(), que desloga em 401.
+      let okPass = false;
+      try {
+        const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: State.user.username, password: pass }) });
+        okPass = r.ok;
+      } catch (e) { return modalErr('Falha de conexão ao validar a senha.'); }
+      if (!okPass) return modalErr('Senha incorreta. O hotel não foi excluído.');
+      await api('/hoteis/' + id, { method: 'DELETE' });
+      closeModal(); toast('Hotel excluído.', 'warn');
+      const me = await api('/me'); State.hoteis = me.hoteis;
+      if (State.hotel && State.hotel.id === id) { setHotel(null); return renderHotelSelect(); }
+      refresh();
+    }, null, 'Excluir definitivamente');
+}
 
 // ----- Usuários (admin) -----
 let usuariosCache = [];
