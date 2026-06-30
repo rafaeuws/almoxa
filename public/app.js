@@ -78,6 +78,8 @@ const I = {
   hotel: '<path d="M3 21h18M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16M9 7h2M13 7h2M9 11h2M13 11h2M9 15h6v6H9z"/>',
   tag: '<path d="M20 10 12 2H4v8l8 8z"/><circle cx="7" cy="7" r="1.5"/>',
   adj: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  clipboard: '<path d="M9 2h6a1 1 0 0 1 1 1v2H8V3a1 1 0 0 1 1-1z"/><path d="M8 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><path d="M9 12h6M9 16h4"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
   swap: '<path d="M16 3l4 4-4 4M20 7H4M8 21l-4-4 4-4M4 17h16"/>',
   print: '<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z"/>',
 };
@@ -235,7 +237,9 @@ const PAGES = [
   { id: 'entradas', grp: 'Movimentação', label: 'Entradas', icon: I.in, roles: ['admin', 'almoxarifado'] },
   { id: 'requisicoes', grp: 'Movimentação', label: 'Requisições / Saídas', icon: I.out },
   { id: 'ajustes', grp: 'Movimentação', label: 'Ajustes', icon: I.adj, roles: ['admin', 'almoxarifado'] },
+  { id: 'contagem', grp: 'Movimentação', label: 'Contagem mensal', icon: I.clipboard, roles: ['admin', 'almoxarifado'] },
   { id: 'kardex', grp: 'Movimentação', label: 'Kardex', icon: I.ledger },
+  { id: 'relatorios', grp: 'Análise', label: 'Relatórios', icon: I.report, roles: ['admin', 'almoxarifado'] },
   { id: 'hoteis', grp: 'Administração', label: 'Hotéis', icon: I.hotel, admin: true },
   { id: 'usuarios', grp: 'Administração', label: 'Usuários', icon: I.users, admin: true },
 ];
@@ -299,7 +303,8 @@ function go(pageId) {
   if (window.innerWidth <= 860) $('sidebar').classList.remove('open');
   const v = $('view'); v.innerHTML = `<p class="t-sub">Carregando…</p>`;
   ({ painel: renderPainel, itens: renderItens, categorias: renderCategorias, fornecedores: renderFornecedores,
-     entradas: renderEntradas, requisicoes: renderRequisicoes, ajustes: renderAjustes, kardex: renderKardex,
+     entradas: renderEntradas, requisicoes: renderRequisicoes, ajustes: renderAjustes, contagem: renderContagem,
+     kardex: renderKardex, relatorios: renderRelatorios,
      hoteis: renderHoteis, usuarios: renderUsuarios }[pageId])(v);
 }
 function refresh() { go(State.page); }
@@ -496,7 +501,7 @@ async function verRequisicao(id) {
     return `<tr><td>${esc(l.descricao)}</td><td class="num ${div ? 'diverg neg' : ''}">${fmtNum(base)} ${l.unidade}${div ? ` <span class="t-sub">(solic. ${fmtNum(qReq)})</span>` : ''}</td><td class="num">${fmtMoney(l.custoUnitario)}</td><td class="num">${fmtMoney(base * (l.custoUnitario || 0))}</td></tr>`; }).join('');
   const tot = r.itens.reduce((s, l) => s + (aprovada ? (l.quantidadeReal != null ? l.quantidadeReal : l.quantidade) : l.quantidade) * (l.custoUnitario || 0), 0);
   const aprovBtn = (r.status === 'pendente' && canApprove()) ? `<button class="btn primary" onclick="closeModal();aprovarRequisicao('${r.id}')">${svg(I.approve)} Aprovar</button><button class="btn" onclick="closeModal();rejeitarRequisicao('${r.id}')">${svg(I.reject)} Rejeitar</button>` : '';
-  openInfo('Requisição ' + r.numero, `<div class="row" style="margin-bottom:14px">${aprovBtn}<button class="btn ${aprovBtn ? '' : 'primary'}" onclick="window.print()">${svg(I.print)} Imprimir</button></div>
+  openInfo('Requisição ' + r.numero, `<div class="row" style="margin-bottom:14px">${aprovBtn}<button class="btn ${aprovBtn ? '' : 'primary'}" onclick="pdfRequisicao('${r.id}')">${svg(I.print)} Imprimir em PDF (com assinaturas)</button></div>
     <div class="detail-list"><div class="dl-row"><span class="dl-k">Status</span><span class="dl-v">${pillReq(r.status)}</span></div>
       <div class="dl-row"><span class="dl-k">Data</span><span class="dl-v">${fmtDateTime(r.data)}</span></div>
       <div class="dl-row"><span class="dl-k">Solicitante</span><span class="dl-v">${esc(r.requisitante)}</span></div>
@@ -600,9 +605,314 @@ async function modalUsuario(id, presetHotelId) {
 function excluirUsuario(id) { confirmar('Excluir usuário?', 'Ação não pode ser desfeita.', async () => { await api('/usuarios/' + id, { method: 'DELETE' }); closeModal(); toast('Usuário excluído.', 'warn'); refresh(); }, 'Excluir'); }
 
 /* ============================================================
+   PDF — carregamento sob demanda do jsPDF + helpers
+   ============================================================ */
+let _pdfReady = false;
+function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = () => res(); s.onerror = () => rej(new Error('falha')); document.head.appendChild(s); }); }
+async function ensureJsPDF() {
+  if (_pdfReady) return true;
+  try {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+    _pdfReady = true; return true;
+  } catch (e) { toast('Não foi possível carregar a biblioteca de PDF (sem internet?).', 'err'); return false; }
+}
+function getPDF(orient) { if (!window.jspdf || !window.jspdf.jsPDF) return null; return new window.jspdf.jsPDF({ orientation: orient || 'portrait', unit: 'mm', format: 'a4' }); }
+function pdfHeader(doc, titulo, periodo) {
+  const W = doc.internal.pageSize.getWidth();
+  doc.setFillColor(14, 92, 74); doc.rect(0, 0, W, 3, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(14, 92, 74);
+  doc.text(State.hotel ? State.hotel.nome : 'Almoxarifado', 14, 13);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(45, 45, 45);
+  doc.text(titulo, 14, 20);
+  doc.setFontSize(8); doc.setTextColor(120);
+  doc.text('Emitido em ' + new Date().toLocaleString('pt-BR') + (State.user ? (' · ' + State.user.nome) : ''), 14, 25.5);
+  if (periodo) doc.text(periodo, W - 14, 25.5, { align: 'right' });
+  doc.setDrawColor(205); doc.line(14, 28, W - 14, 28);
+}
+function pdfFooter(doc) {
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  doc.setFontSize(7); doc.setTextColor(150);
+  doc.text('Desenvolvido por Rafael Almeida · rafael.almeida@accor.com', 14, H - 7);
+  doc.text('Página ' + doc.internal.getCurrentPageInfo().pageNumber, W - 14, H - 7, { align: 'right' });
+}
+function pdfRun(doc, titulo, head, body, opts) {
+  opts = opts || {};
+  doc.autoTable(Object.assign({
+    head: [head], body, startY: 33, margin: { top: 33, left: 14, right: 14, bottom: 14 },
+    styles: { fontSize: 8, cellPadding: 2, overflow: 'linebreak', lineColor: [230, 235, 233], lineWidth: 0.1 },
+    headStyles: { fillColor: [14, 92, 74], textColor: 255, fontSize: 8, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [244, 247, 246] },
+    didDrawPage: () => { pdfHeader(doc, titulo, opts.periodo); pdfFooter(doc); }
+  }, opts.table || {}));
+  doc.save((opts.file || 'relatorio') + '-' + new Date().toISOString().slice(0, 10) + '.pdf');
+  toast('PDF gerado.', 'ok');
+}
+function colsRight(idxs) { const o = {}; idxs.forEach((i) => (o[i] = { halign: 'right' })); return o; }
+const statusLabel = (it) => { const s = statusItem(it); return s === 'ok' ? 'Normal' : s === 'low' ? 'Baixo' : 'Zerado'; };
+const inPeriodo = (iso) => { const d = (iso || '').slice(0, 10); return d >= relPeriodo.de && d <= relPeriodo.ate; };
+const periodoStr = () => 'Período: ' + fmtDate(relPeriodo.de + 'T12:00:00') + ' a ' + fmtDate(relPeriodo.ate + 'T12:00:00');
+const valorTotalEstoque = () => relItens.reduce((s, i) => s + i.estoqueAtual * (i.custoMedio || 0), 0);
+const itensBaixos = () => relItens.filter((i) => i.ativo !== false && i.estoqueAtual <= i.estoqueMinimo);
+const qRealDe = (l, aprovada) => aprovada ? (l.quantidadeReal != null ? l.quantidadeReal : l.quantidade) : l.quantidade;
+
+async function pdfRequisicao(id) {
+  if (!(await ensureJsPDF())) return;
+  const r = await getH('/requisicoes/' + id);
+  const doc = getPDF('portrait'); if (!doc) return toast('Biblioteca de PDF indisponível.', 'err');
+  const titulo = 'Requisição de Material ' + r.numero;
+  const hotelLinha = State.hotel ? (State.hotel.nome + (State.hotel.cidade ? (' · ' + State.hotel.cidade) : '')) : '—';
+  const F = { fontStyle: 'bold', fillColor: [240, 244, 243] };
+  doc.autoTable({
+    body: [
+      [{ content: 'Hotel', styles: F }, hotelLinha, { content: 'Nº', styles: F }, r.numero],
+      [{ content: 'Data', styles: F }, fmtDateTime(r.data), { content: 'Setor / C. custo', styles: F }, r.setor || '—'],
+      [{ content: 'Solicitante', styles: F }, { content: r.requisitante || '—', colSpan: 3 }],
+    ],
+    startY: 33, margin: { top: 33, left: 14, right: 14 }, styles: { fontSize: 9, cellPadding: 2.5, lineColor: [210, 218, 215], lineWidth: 0.1 },
+    columnStyles: { 0: { cellWidth: 34 }, 2: { cellWidth: 34 } },
+    didDrawPage: () => { pdfHeader(doc, titulo); pdfFooter(doc); },
+  });
+  const aprovada = r.status === 'aprovada';
+  const body = r.itens.map((l, i) => { const q = qRealDe(l, aprovada); return [String(i + 1), l.codigo || '—', l.descricao || '(removido)', l.unidade || '', fmtNum(q), fmtMoney(l.custoUnitario), fmtMoney(q * (l.custoUnitario || 0))]; });
+  const tot = r.itens.reduce((s, l) => s + qRealDe(l, aprovada) * (l.custoUnitario || 0), 0);
+  body.push([{ content: 'TOTAL', colSpan: 6, styles: { halign: 'right', fontStyle: 'bold' } }, { content: fmtMoney(tot), styles: { fontStyle: 'bold', halign: 'right' } }]);
+  doc.autoTable({
+    head: [['#', 'Código', 'Descrição', 'Un.', 'Qtd', 'Custo unit.', 'Total']],
+    body, startY: doc.lastAutoTable.finalY + 6, margin: { top: 33, left: 14, right: 14, bottom: 42 },
+    styles: { fontSize: 8.5, cellPadding: 2.5, lineColor: [225, 231, 229], lineWidth: 0.1 },
+    headStyles: { fillColor: [14, 92, 74], textColor: 255, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [246, 248, 247] },
+    columnStyles: { 0: { cellWidth: 9, halign: 'center' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
+    didDrawPage: () => { pdfHeader(doc, titulo); pdfFooter(doc); },
+  });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  let y = doc.lastAutoTable.finalY + 24;
+  if (y > H - 46) { doc.addPage(); pdfHeader(doc, titulo); pdfFooter(doc); y = 46; }
+  if (r.obs) { doc.setFontSize(8); doc.setTextColor(90); doc.text('Observações: ' + r.obs, 14, y - 8, { maxWidth: W - 28 }); }
+  const colW = (W - 28 - 20) / 2, x1 = 14, x2 = 14 + colW + 20, ly = y + 18;
+  doc.setDrawColor(60); doc.setLineWidth(0.3);
+  doc.line(x1, ly, x1 + colW, ly); doc.line(x2, ly, x2 + colW, ly);
+  doc.setFontSize(8.5); doc.setTextColor(40);
+  doc.text('Responsável pela requisição', x1 + colW / 2, ly + 5, { align: 'center' });
+  doc.setFontSize(8); doc.setTextColor(110);
+  doc.text(r.requisitante || '', x1 + colW / 2, ly + 10, { align: 'center' });
+  doc.setFontSize(8.5); doc.setTextColor(40);
+  doc.text('Visto do subgerente', x2 + colW / 2, ly + 5, { align: 'center' });
+  doc.setFontSize(7.5); doc.setTextColor(140);
+  doc.text('Nome / assinatura', x2 + colW / 2, ly + 10, { align: 'center' });
+  doc.save('requisicao-' + r.numero + '.pdf');
+  toast('PDF da requisição gerado.', 'ok');
+}
+
+/* ============================================================
+   PÁGINA: RELATÓRIOS
+   ============================================================ */
+let relPeriodo = null, relItens = [], relReqs = [];
+function reportCard(t, d, fn) {
+  return `<div class="report-card card" style="padding:14px;cursor:pointer" onclick="${fn}">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">${svg(I.report)}<strong style="font-size:13.5px">${t}</strong></div>
+    <p class="t-sub" style="font-size:12px;margin-bottom:11px;line-height:1.4">${d}</p>
+    <span class="btn sm primary" style="pointer-events:none">${svg(I.download)} Gerar PDF</span></div>`;
+}
+async function renderRelatorios(v) {
+  if (!relPeriodo) { const d = new Date(); relPeriodo = { de: new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10), ate: todayInput() }; }
+  [relItens, relReqs] = await Promise.all([getH('/itens'), getH('/requisicoes')]);
+  const valor = valorTotalEstoque();
+  let html = `<div class="card" style="margin-bottom:18px"><div class="card-head">${svg(I.report)}<h3>Central de relatórios (PDF)</h3></div>
+    <div class="card-body">
+      <div class="row" style="align-items:flex-end;margin-bottom:18px">
+        <div class="field" style="margin:0"><label>Período — de</label><input type="date" id="rel_de" value="${relPeriodo.de}" onchange="relPeriodo.de=this.value"></div>
+        <div class="field" style="margin:0"><label>até</label><input type="date" id="rel_ate" value="${relPeriodo.ate}" onchange="relPeriodo.ate=this.value"></div>
+        <span class="t-sub" style="flex:1;min-width:180px">O período se aplica à movimentação, ao mapa de entradas/saídas e ao consumo por setor.</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(235px,1fr));gap:12px">
+        ${reportCard('Posição de estoque', 'Saldos, custo médio e valorização total do estoque.', 'pdfPosicaoEstoque()')}
+        ${reportCard('Curva ABC', 'Classificação dos itens por concentração de valor (A/B/C).', 'pdfCurvaABC()')}
+        ${reportCard('Movimentação de estoque', 'Entradas, saídas e ajustes do período.', 'pdfMovimentacao()')}
+        ${reportCard('Mapa de entradas e saídas', 'Totais de entrada e saída por item no período.', 'pdfMapaES()')}
+        ${reportCard('Itens para reposição', 'Itens no/abaixo do mínimo com sugestão de compra.', 'pdfReposicao()')}
+        ${reportCard('Consumo por setor', 'Valor consumido por centro de custo via requisições.', 'pdfConsumoSetor()')}
+      </div>
+    </div></div>`;
+  // Posição de estoque (tela)
+  html += `<div class="card"><div class="card-head">${svg(I.box)}<h3>Posição de estoque</h3><div class="spacer"></div><span class="tag">${relItens.length} itens · ${fmtMoney(valor)}</span></div>`;
+  if (relItens.length) {
+    html += tbl([{ t: 'Código' }, { t: 'Descrição' }, { t: 'Un.' }, { t: 'Saldo', r: 1 }, { t: 'Custo méd.', r: 1 }, { t: 'Valor', r: 1 }, { t: 'Status', r: 1 }]);
+    relItens.slice().sort((a, b) => a.descricao.localeCompare(b.descricao)).forEach((it) => {
+      html += `<tr><td class="t-code">${esc(it.codigo)}</td><td class="t-desc">${esc(it.descricao)}</td><td class="t-sub">${it.unidade}</td><td class="num">${fmtNum(it.estoqueAtual)}</td><td class="num t-sub">${fmtMoney(it.custoMedio)}</td><td class="num">${fmtMoney(it.estoqueAtual * (it.custoMedio || 0))}</td><td class="num">${pillStatus(statusItem(it))}</td></tr>`;
+    });
+    html += `<tr><td colspan="5" style="text-align:right;font-weight:600">Valor total</td><td class="num" style="font-weight:600">${fmtMoney(valor)}</td><td></td></tr></tbody></table></div>`;
+  } else html += `<div class="card-body t-sub">Sem itens cadastrados.</div>`;
+  html += `</div>`;
+  // Reposição (tela)
+  const baixos = itensBaixos();
+  html += `<div class="section-title">Itens para reposição</div><div class="card">`;
+  if (baixos.length) {
+    html += tbl([{ t: 'Código' }, { t: 'Descrição' }, { t: 'Atual', r: 1 }, { t: 'Mínimo', r: 1 }, { t: 'Sugestão', r: 1 }]);
+    baixos.forEach((it) => { const sug = Math.max(0, it.estoqueMinimo * 2 - it.estoqueAtual); html += `<tr><td class="t-code">${esc(it.codigo)}</td><td class="t-desc">${esc(it.descricao)}</td><td class="num">${fmtNum(it.estoqueAtual)} ${it.unidade}</td><td class="num">${fmtNum(it.estoqueMinimo)}</td><td class="num"><strong>${fmtNum(sug)} ${it.unidade}</strong></td></tr>`; });
+    html += `</tbody></table></div>`;
+  } else html += `<div class="card-body t-sub">Nenhum item no ponto de reposição. 👍</div>`;
+  html += `</div>`;
+  // Consumo por setor (tela)
+  const porSetor = {};
+  relReqs.filter((r) => r.status === 'aprovada').forEach((r) => { const k = r.setor || '(sem setor)'; porSetor[k] = (porSetor[k] || 0) + (r.valor || 0); });
+  const setores = Object.entries(porSetor).sort((a, b) => b[1] - a[1]);
+  html += `<div class="section-title">Consumo por setor / centro de custo</div><div class="card">`;
+  if (setores.length) {
+    const max = setores[0][1] || 1; html += `<div class="card-body">`;
+    setores.forEach(([s, v2]) => { html += `<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>${esc(s)}</span><span class="num" style="font-weight:600">${fmtMoney(v2)}</span></div><div style="height:8px;background:var(--surface-3);border-radius:4px;overflow:hidden"><div style="height:100%;width:${(v2 / max * 100).toFixed(1)}%;background:var(--out)"></div></div></div>`; });
+    html += `</div>`;
+  } else html += `<div class="card-body t-sub">Nenhuma requisição aprovada ainda.</div>`;
+  html += `</div>`;
+  // Curva ABC (tela)
+  const comValor = relItens.filter((i) => i.estoqueAtual * (i.custoMedio || 0) > 0).map((i) => ({ it: i, val: i.estoqueAtual * (i.custoMedio || 0) })).sort((a, b) => b.val - a.val);
+  const totalABC = comValor.reduce((s, x) => s + x.val, 0) || 1;
+  html += `<div class="section-title">Curva ABC — concentração de valor</div><div class="card">`;
+  if (comValor.length) {
+    let acum = 0; const cnt = { A: 0, B: 0, C: 0 };
+    html += tbl([{ t: 'Classe' }, { t: 'Código' }, { t: 'Descrição' }, { t: 'Valor', r: 1 }, { t: '% total', r: 1 }, { t: '% acum.', r: 1 }]);
+    comValor.forEach((x) => { acum += x.val; const pAc = acum / totalABC * 100; const cls = pAc <= 80 ? 'A' : pAc <= 95 ? 'B' : 'C'; cnt[cls]++; html += `<tr><td><span class="abc-${cls}">${cls}</span></td><td class="t-code">${esc(x.it.codigo)}</td><td class="t-desc">${esc(x.it.descricao)}</td><td class="num">${fmtMoney(x.val)}</td><td class="num t-sub">${(x.val / totalABC * 100).toFixed(1)}%</td><td class="num t-sub">${pAc.toFixed(1)}%</td></tr>`; });
+    html += `</tbody></table>`;
+    html += `<div class="card-body" style="border-top:1px solid var(--line);display:flex;gap:26px;flex-wrap:wrap"><div><span class="abc-A">A</span> ${cnt.A} itens (até 80% do valor)</div><div><span class="abc-B">B</span> ${cnt.B} itens</div><div><span class="abc-C">C</span> ${cnt.C} itens</div></div></div>`;
+  } else html += `<div class="card-body t-sub">Sem valor de estoque para classificar.</div>`;
+  html += `</div>`;
+  v.innerHTML = html;
+}
+async function pdfPosicaoEstoque() {
+  if (!(await ensureJsPDF())) return; const doc = getPDF('portrait'); if (!doc) return;
+  if (!relItens.length) return toast('Sem itens para o relatório.', 'warn');
+  const items = relItens.slice().sort((a, b) => a.descricao.localeCompare(b.descricao));
+  const body = items.map((it) => [it.codigo, it.descricao, it.unidade, fmtNum(it.estoqueAtual), fmtMoney(it.custoMedio), fmtMoney(it.estoqueAtual * (it.custoMedio || 0)), statusLabel(it)]);
+  body.push([{ content: 'VALOR TOTAL EM ESTOQUE', colSpan: 5, styles: { halign: 'right', fontStyle: 'bold' } }, { content: fmtMoney(valorTotalEstoque()), styles: { fontStyle: 'bold', halign: 'right' } }, '']);
+  pdfRun(doc, 'Posição de Estoque', ['Código', 'Descrição', 'Un.', 'Saldo', 'Custo médio', 'Valor', 'Status'], body, { file: 'posicao-estoque', table: { columnStyles: colsRight([3, 4, 5]) } });
+}
+async function pdfReposicao() {
+  if (!(await ensureJsPDF())) return; const doc = getPDF('portrait'); if (!doc) return;
+  const baixos = itensBaixos(); if (!baixos.length) return toast('Nenhum item no ponto de reposição.', 'ok');
+  const body = baixos.map((it) => { const sug = Math.max(0, it.estoqueMinimo * 2 - it.estoqueAtual); return [it.codigo, it.descricao, it.unidade, fmtNum(it.estoqueAtual), fmtNum(it.estoqueMinimo), fmtNum(sug), statusLabel(it)]; });
+  pdfRun(doc, 'Itens para Reposição', ['Código', 'Descrição', 'Un.', 'Atual', 'Mínimo', 'Sugestão', 'Status'], body, { file: 'reposicao', table: { columnStyles: colsRight([3, 4, 5]) } });
+}
+async function pdfCurvaABC() {
+  if (!(await ensureJsPDF())) return; const doc = getPDF('portrait'); if (!doc) return;
+  const comValor = relItens.filter((i) => i.estoqueAtual * (i.custoMedio || 0) > 0).map((i) => ({ it: i, val: i.estoqueAtual * (i.custoMedio || 0) })).sort((a, b) => b.val - a.val);
+  if (!comValor.length) return toast('Sem valor de estoque para classificar.', 'warn');
+  const total = comValor.reduce((s, x) => s + x.val, 0) || 1; let acum = 0;
+  const body = comValor.map((x) => { acum += x.val; const pAc = acum / total * 100; const cls = pAc <= 80 ? 'A' : pAc <= 95 ? 'B' : 'C'; return [cls, x.it.codigo, x.it.descricao, fmtMoney(x.val), (x.val / total * 100).toFixed(1) + '%', pAc.toFixed(1) + '%']; });
+  pdfRun(doc, 'Curva ABC de Estoque', ['Classe', 'Código', 'Descrição', 'Valor', '% total', '% acum.'], body, {
+    file: 'curva-abc', table: { columnStyles: Object.assign(colsRight([3, 4, 5]), { 0: { halign: 'center', fontStyle: 'bold' } }), didParseCell: (d) => { if (d.section === 'body' && d.column.index === 0) { const c = d.cell.raw; d.cell.styles.textColor = c === 'A' ? [190, 58, 43] : c === 'B' ? [185, 118, 8] : [27, 122, 61]; } } },
+  });
+}
+async function pdfMovimentacao() {
+  if (!(await ensureJsPDF())) return; const doc = getPDF('landscape'); if (!doc) return;
+  const mvs = await getH(`/movimentacoes?de=${relPeriodo.de}&ate=${relPeriodo.ate}`);
+  if (!mvs.length) return toast('Nenhuma movimentação no período.', 'warn');
+  const ordered = mvs.slice().sort((a, b) => (a.data + a.id).localeCompare(b.data + b.id));
+  let totEnt = 0, totSai = 0;
+  const body = ordered.map((m) => { const valor = m.quantidade * (m.custoUnitario || 0); if (m.tipo === 'entrada') totEnt += valor; if (m.tipo === 'saida') totSai += valor; const tl = m.tipo === 'entrada' ? 'Entrada' : m.tipo === 'saida' ? 'Saída' : 'Ajuste'; const sinal = m.tipo === 'saida' ? '−' : m.tipo === 'entrada' ? '+' : ''; return [fmtDateTime(m.data), m.itemCodigo || '—', m.itemDescricao || '—', tl, m.documento || '—', sinal + fmtNum(m.quantidade), fmtMoney(valor), fmtNum(m.saldoApos)]; });
+  body.push([{ content: 'Totais — Entradas ' + fmtMoney(totEnt) + ' · Saídas ' + fmtMoney(totSai), colSpan: 8, styles: { halign: 'right', fontStyle: 'bold' } }]);
+  pdfRun(doc, 'Movimentação de Estoque', ['Data', 'Código', 'Descrição', 'Tipo', 'Documento', 'Qtde', 'Valor', 'Saldo'], body, { file: 'movimentacao', periodo: periodoStr(), table: { columnStyles: colsRight([5, 6, 7]) } });
+}
+async function pdfMapaES() {
+  if (!(await ensureJsPDF())) return; const doc = getPDF('landscape'); if (!doc) return;
+  const mvs = await getH(`/movimentacoes?de=${relPeriodo.de}&ate=${relPeriodo.ate}`);
+  const map = {};
+  mvs.forEach((m) => { const k = m.itemCodigo || '?'; if (!map[k]) map[k] = { cod: m.itemCodigo, desc: m.itemDescricao, un: m.unidade, entQ: 0, entV: 0, saiQ: 0, saiV: 0 }; const v2 = m.quantidade * (m.custoUnitario || 0); if (m.tipo === 'entrada') { map[k].entQ += m.quantidade; map[k].entV += v2; } else if (m.tipo === 'saida') { map[k].saiQ += m.quantidade; map[k].saiV += v2; } });
+  const keys = Object.keys(map); if (!keys.length) return toast('Nenhuma entrada/saída no período.', 'warn');
+  let tEntV = 0, tSaiV = 0;
+  const saldoDe = (cod) => { const it = relItens.find((i) => i.codigo === cod); return it ? it.estoqueAtual : 0; };
+  const body = keys.map((k) => map[k]).sort((a, b) => (a.desc || '').localeCompare(b.desc || '')).map((d) => { tEntV += d.entV; tSaiV += d.saiV; return [d.cod, d.desc, d.un, fmtNum(d.entQ), fmtMoney(d.entV), fmtNum(d.saiQ), fmtMoney(d.saiV), fmtNum(saldoDe(d.cod))]; });
+  body.push([{ content: 'Totais', colSpan: 4, styles: { halign: 'right', fontStyle: 'bold' } }, { content: fmtMoney(tEntV), styles: { fontStyle: 'bold', halign: 'right' } }, '', { content: fmtMoney(tSaiV), styles: { fontStyle: 'bold', halign: 'right' } }, '']);
+  pdfRun(doc, 'Mapa de Entradas e Saídas', ['Código', 'Descrição', 'Un.', 'Qtd entradas', 'R$ entradas', 'Qtd saídas', 'R$ saídas', 'Saldo atual'], body, { file: 'mapa-entradas-saidas', periodo: periodoStr(), table: { columnStyles: colsRight([3, 4, 5, 6, 7]) } });
+}
+async function pdfConsumoSetor() {
+  if (!(await ensureJsPDF())) return; const doc = getPDF('portrait'); if (!doc) return;
+  const ag = {};
+  relReqs.filter((r) => r.status === 'aprovada' && inPeriodo(r.data)).forEach((r) => { const k = r.setor || '(sem setor)'; if (!ag[k]) ag[k] = { reqs: 0, itens: 0, valor: 0 }; ag[k].reqs++; ag[k].itens += r.qtdItens || 0; ag[k].valor += r.valor || 0; });
+  const linhas = Object.entries(ag).sort((a, b) => b[1].valor - a[1].valor);
+  if (!linhas.length) return toast('Nenhuma requisição aprovada no período.', 'warn');
+  let tot = 0; const body = linhas.map(([s, d]) => { tot += d.valor; return [s, String(d.reqs), String(d.itens), fmtMoney(d.valor)]; });
+  body.push([{ content: 'Total do período', colSpan: 3, styles: { halign: 'right', fontStyle: 'bold' } }, { content: fmtMoney(tot), styles: { fontStyle: 'bold', halign: 'right' } }]);
+  pdfRun(doc, 'Consumo por Setor / Centro de Custo', ['Setor', 'Nº requisições', 'Itens', 'Valor consumido'], body, { file: 'consumo-por-setor', periodo: periodoStr(), table: { columnStyles: colsRight([1, 2, 3]) } });
+}
+
+/* ============================================================
+   PÁGINA: CONTAGEM MENSAL
+   ============================================================ */
+let contagemAtiva = null;
+async function renderContagem(v) {
+  if (contagemAtiva) return renderContagemFolha(v);
+  const cs = await getH('/contagens');
+  const itens = await getH('/itens'); const ativos = itens.filter((i) => i.ativo !== false).length;
+  let html = `<div class="card"><div class="card-head">${svg(I.clipboard)}<h3>Contagem mensal de inventário</h3></div>
+    <div class="card-body"><p class="t-sub" style="margin-bottom:14px">Faça a contagem física do estoque. O sistema mostra o saldo atual ao lado do campo; ao finalizar, as <strong>divergências geram ajustes automaticamente</strong> e ficam registradas no Kardex.</p>
+    <button class="btn primary" onclick="iniciarContagem()" ${ativos ? '' : 'disabled'}>${svg(I.clipboard)} Iniciar nova contagem</button>
+    ${ativos ? '' : '<p class="hint">Cadastre itens ativos para contar.</p>'}</div></div>`;
+  if (cs.length) {
+    html += `<div class="section-title">Contagens anteriores</div>` + tbl([{ t: 'Nº' }, { t: 'Data' }, { t: 'Responsável' }, { t: 'Itens', r: 1 }, { t: 'Divergências', r: 1 }, { t: '', r: 1 }]);
+    cs.forEach((c) => { html += `<tr><td class="t-code">${c.numero}</td><td class="t-sub mono">${fmtDateTime(c.data)}</td><td class="t-desc">${esc(c.responsavel || '—')}</td><td class="num">${c.qtdItens}</td><td class="num">${c.ajustes ? `<span class="pill low">${c.ajustes}</span>` : '<span class="pill ok">0</span>'}</td><td class="actions-cell"><button class="icon-btn" title="Ver" onclick="verContagem('${c.id}')">${svg(I.eye)}</button></td></tr>`; });
+    html += `</tbody></table></div>`;
+  }
+  v.innerHTML = html;
+}
+function iniciarContagem() { contagemAtiva = { responsavel: (State.user && State.user.nome) || '' }; go('contagem'); }
+function cancelarContagem() { contagemAtiva = null; go('contagem'); }
+async function renderContagemFolha(v) {
+  const itens = (await getH('/itens')).filter((i) => i.ativo !== false).sort((a, b) => a.descricao.localeCompare(b.descricao));
+  let html = `<div class="card"><div class="card-head">${svg(I.clipboard)}<h3>Folha de contagem</h3><div class="spacer"></div>
+      <button class="btn" onclick="cancelarContagem()">Cancelar</button>
+      <button class="btn primary" onclick="finalizarContagem()">${svg(I.check)} Finalizar e ajustar</button></div>
+    <div class="card-body"><div class="field" style="max-width:320px;margin:0"><label>Responsável pela contagem</label><input id="ct_resp" value="${esc(contagemAtiva.responsavel)}"></div></div>`;
+  if (!itens.length) { v.innerHTML = html + `<div class="card-body t-sub">Nenhum item ativo para contar.</div></div>`; return; }
+  html += tbl([{ t: 'Código' }, { t: 'Descrição' }, { t: 'Un.' }, { t: 'Saldo sistema', r: 1 }, { t: 'Contagem física', r: 1 }, { t: 'Divergência', r: 1 }]);
+  itens.forEach((it) => { html += `<tr class="cont-row" data-item="${it.id}"><td class="t-code">${esc(it.codigo)}</td><td class="t-desc">${esc(it.descricao)}</td><td class="t-sub">${it.unidade}</td><td class="num" data-sis="${it.estoqueAtual}">${fmtNum(it.estoqueAtual)}</td><td class="num"><input type="number" step="any" min="0" value="${it.estoqueAtual}" style="width:110px;padding:6px 8px;border:1px solid var(--line-strong);border-radius:6px;text-align:right;font-family:var(--mono)" oninput="contDiverg(this)"></td><td class="num"><span class="diverg zero" data-dv>0</span></td></tr>`; });
+  html += `</tbody></table></div>`;
+  v.innerHTML = html;
+}
+function contDiverg(inp) {
+  const tr = inp.closest('tr'); const sis = parseFloat(tr.querySelector('[data-sis]').dataset.sis) || 0;
+  const cont = parseFloat(inp.value); const dv = (isNaN(cont) ? sis : cont) - sis;
+  const span = tr.querySelector('[data-dv]'); span.textContent = (dv > 0 ? '+' : '') + fmtNum(dv);
+  span.className = 'diverg ' + (dv > 0 ? 'pos' : dv < 0 ? 'neg' : 'zero');
+}
+function finalizarContagem() {
+  const resp = val('ct_resp');
+  const rows = [...document.querySelectorAll('.cont-row')];
+  const itens = []; let divergentes = 0;
+  rows.forEach((tr) => { const sis = parseFloat(tr.querySelector('[data-sis]').dataset.sis) || 0; const cont = parseFloat(tr.querySelector('input').value); const contado = isNaN(cont) ? sis : cont; if (contado !== sis) divergentes++; itens.push({ itemId: tr.dataset.item, contado }); });
+  const acao = async () => {
+    const out = await postH('/contagens', { responsavel: resp, itens });
+    contagemAtiva = null; closeModal(); go('contagem');
+    toast(`Contagem ${out.numero} finalizada — ${out.ajustes} ajuste(s) aplicado(s).`, out.ajustes ? 'warn' : 'ok');
+  };
+  if (divergentes > 0) confirmar(`Finalizar com ${divergentes} divergência(s)?`, 'Os saldos divergentes serão ajustados automaticamente para o valor contado, gerando movimentações de ajuste no Kardex.', acao, 'Finalizar e ajustar');
+  else confirmar('Finalizar contagem?', 'Nenhuma divergência encontrada. A contagem será registrada.', acao, 'Finalizar');
+}
+async function verContagem(id) {
+  const c = await getH('/contagens/' + id);
+  const rows = c.itens.map((l) => { const cls = l.diverg > 0 ? 'pos' : l.diverg < 0 ? 'neg' : 'zero'; return `<tr><td>${esc(l.descricao)}</td><td class="num">${fmtNum(l.sistema)}</td><td class="num">${fmtNum(l.contado)}</td><td class="num"><span class="diverg ${cls}">${(l.diverg > 0 ? '+' : '') + fmtNum(l.diverg)}</span></td></tr>`; }).join('');
+  openInfo('Contagem ' + c.numero, `<div class="detail-list"><div class="dl-row"><span class="dl-k">Data</span><span class="dl-v">${fmtDateTime(c.data)}</span></div><div class="dl-row"><span class="dl-k">Responsável</span><span class="dl-v">${esc(c.responsavel || '—')}</span></div><div class="dl-row"><span class="dl-k">Ajustes aplicados</span><span class="dl-v">${c.ajustes || 0}</span></div></div>
+    ${tbl([{ t: 'Item' }, { t: 'Sistema', r: 1 }, { t: 'Contado', r: 1 }, { t: 'Diverg.', r: 1 }])}${rows}</tbody></table></div>`);
+}
+
+// CSS extra para relatórios/contagem (injetado uma vez).
+function injectExtraCSS() {
+  if (document.getElementById('extra-css')) return;
+  const s = document.createElement('style'); s.id = 'extra-css';
+  s.textContent = `.abc-A,.abc-B,.abc-C{display:inline-block;min-width:20px;text-align:center;padding:1px 7px;border-radius:6px;font-weight:700;font-size:11px}
+  .abc-A{background:var(--out-soft);color:var(--out)}.abc-B{background:var(--warn-soft);color:var(--warn)}.abc-C{background:var(--in-soft);color:var(--in)}
+  .diverg{font-family:var(--mono);font-weight:600}.diverg.pos{color:var(--in)}.diverg.zero{color:var(--ink-faint)}
+  .report-card{transition:transform .12s,border-color .15s}.report-card:hover{transform:translateY(-2px);border-color:var(--primary)}
+  .tag{display:inline-block;background:var(--surface-3);color:var(--ink-soft);font-size:11.5px;font-weight:600;padding:2px 9px;border-radius:20px}
+  .hint{font-size:12px;color:var(--ink-faint);margin-top:6px}`;
+  document.head.appendChild(s);
+}
+
+/* ============================================================
    BOOT
    ============================================================ */
 async function boot() {
+  injectExtraCSS();
   if (!State.token) return renderLogin();
   try { const me = await api('/me'); State.user = me.user; State.hoteis = me.hoteis; localStorage.setItem('almox_user', JSON.stringify(me.user)); afterLogin(); }
   catch (e) { clearSession(); renderLogin(); }
@@ -614,4 +924,6 @@ Object.assign(window, { go, logout, trocarHotel, selecionarHotel, ajuda, refresh
   modalItem, excluirItem, filtraItens, modalCategoria, excluirCategoria, modalFornecedor, excluirFornecedor,
   modalEntrada, modalRequisicao, verRequisicao, aprovarRequisicao, rejeitarRequisicao,
   renderAjustes, ajSaldoAtual, salvarAjuste, addLinha, redrawLinhas,
-  modalHotel, excluirHotel, modalUsuario, excluirUsuario, closeModal });
+  modalHotel, excluirHotel, modalUsuario, excluirUsuario, closeModal,
+  pdfRequisicao, pdfPosicaoEstoque, pdfReposicao, pdfCurvaABC, pdfMovimentacao, pdfMapaES, pdfConsumoSetor,
+  iniciarContagem, cancelarContagem, finalizarContagem, contDiverg, verContagem });
